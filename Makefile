@@ -1,12 +1,14 @@
-.PHONY: all clean run
+COMPILER = ./compiler
+SOURCES  = scanner.go symtab.go codegen.go parser.go main.go
 
-all: scanner
+all:
+	go build -o compiler $(SOURCES)
 
-scanner: scanner.go
-	go build -o scanner scanner.go
-
-run: scanner
-	./scanner input.pas
+test: all test.pas
+	$(COMPILER) test.pas
+	./test; echo $$?
 
 clean:
-	rm -f scanner
+	rm -f compiler test test.s test.o
+
+.PHONY: all test clean

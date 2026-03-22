@@ -8,7 +8,7 @@ import (
 
 const (
     symNull = 0
-    
+
     symPlus = 1
     symMinus = 2
     symTimes = 3
@@ -18,16 +18,22 @@ const (
     symSemicolon = 7
     symLParen = 8
     symRParen = 9
-    
+
     symString = 10
     symIdent = 11
-    
+    symNumber = 12
+    symComma = 13
+    symPeriod = 14
     symKwIf = 20
     symKwThen = 21
     symKwBegin = 22
     symKwEnd = 23
     symKwProgram = 24
     symKwProcedure = 25
+    symKwVar = 26
+    symKwWrite = 27
+    symKwInteger = 28
+    symKwStringType = 29
 
     symEOF = 99
 )
@@ -42,7 +48,10 @@ var tokenNames = map[int]string{
     symSemicolon: "SEMICOLON",
     symLParen: "LPAREN",
     symRParen: "RPAREN",
+    symComma: "COMMA",
+    symPeriod: "PERIOD",
     symString: "STRING",
+    symNumber: "NUMBER",
     symIdent: "IDENT",
     symKwIf: "KW_IF",
     symKwThen: "KW_THEN",
@@ -50,10 +59,14 @@ var tokenNames = map[int]string{
     symKwEnd: "KW_END",
     symKwProgram: "KW_PROGRAM",
     symKwProcedure: "KW_PROCEDURE",
+    symKwVar: "KW_VAR",
+    symKwWrite: "KW_WRITE",
+    symKwInteger: "KW_INTEGER",
+    symKwStringType: "KW_STRING",
     symEOF: "EOF",
 }
 
-const NKW = 6
+const NKW = 10
 
 type kwEntry struct {
     sym int
@@ -77,16 +90,20 @@ func init() {
     KWX[2] = k
 
     enterKW(symKwEnd, "end", &k)
+    enterKW(symKwVar, "var", &k)
     KWX[3] = k
 
     enterKW(symKwThen, "then", &k)
     KWX[4] = k
 
     enterKW(symKwBegin, "begin", &k)
+    enterKW(symKwWrite, "write", &k)
     KWX[5] = k
 
+    enterKW(symKwStringType, "string", &k)
     KWX[6] = k
 
+    enterKW(symKwInteger, "integer", &k)
     enterKW(symKwProgram, "program", &k)
     KWX[7] = k
 
@@ -111,6 +128,7 @@ type Scanner struct {
     col int
     id string
     str string
+    ival int64
     errcnt int
 }
 
@@ -118,137 +136,153 @@ func initScanner(src []byte) *Scanner {
     s := &Scanner{src: src, line: 1, col: 0}
 
     s.readChar()
-    
+
     return s
 }
 
 func (s *Scanner) readChar() {
-    if s.pos < len(s.src) {
-        s.ch = s.src[s.pos]
-        s.pos++
+	if s.pos < len(s.src) {
+		s.ch = s.src[s.pos]
+		s.pos++
 
-        if s.ch == '\n' {
-            s.line++
-            s.col = 0
-        } else {
-            s.col++
-        }
-    } else {
-        if s.ch != 0 {
-            s.col++
-        }
+		if s.ch == '\n' {
+			s.line++
+			s.col = 0
+		} else {
+			s.col++
+		}
+	} else {
+		if s.ch != 0 {
+			s.col++
+		}
 
-        s.ch = 0
-    }
+		s.ch = 0
+	}
 }
 
-func (s *Scanner) eot() bool { 
-    return s.ch == 0
+func (s *Scanner) eot() bool {
+	return s.ch == 0
 }
 
 func (s *Scanner) mark(line, col int, msg string) {
-    fmt.Fprintf(os.Stderr, "Error (line %d, col %d): %s\n", line, col, msg)
+	fmt.Fprintf(os.Stderr, "Error (line %d, col %d): %s\n", line, col, msg)
 
     s.errcnt++
 }
 
 func (s *Scanner) identifier() int {
-    var buf strings.Builder
+	var buf strings.Builder
 
-    for isAlphaNum(s.ch) {
-        buf.WriteByte(s.ch)
+	for isAlphaNum(s.ch) {
+		buf.WriteByte(s.ch)
 
-        s.readChar()
-    }
+		s.readChar()
+	}
 
-    s.id = buf.String()
+	s.id = buf.String()
 
-    n := len(s.id)
+	n := len(s.id)
 
-    if n >= 2 && n <= 9 {
-        lo, hi := KWX[n - 1], KWX[n]
+	if n >= 2 && n <= 9 {
+		lo, hi := KWX[n - 1], KWX[n]
 
-        for k := lo; k < hi; k++ {
-            if s.id == keyTab[k].id {
-                return keyTab[k].sym
-            }
-        }
-    }
+		for k := lo; k < hi; k++ {
+			if s.id == keyTab[k].id {
+				return keyTab[k].sym
+			}
+		}
+	}
 
-    return symIdent
+	return symIdent
+}
+
+func (s *Scanner) scanNumber() int {
+	s.ival = 0
+
+	for s.ch >= '0' && s.ch <= '9' {
+		s.ival = s.ival * 10 + int64(s.ch - '0')
+
+		s.readChar()
+	}
+
+	return symNumber
 }
 
 func (s *Scanner) scanString(startLine, startCol int) int {
-    var buf strings.Builder
+	var buf strings.Builder
 
-    buf.WriteByte('"')
-    
-    s.readChar()
-    
-    for !s.eot() && s.ch != '"' && s.ch != '\n' {
-        buf.WriteByte(s.ch)
+	buf.WriteByte('"')
 
-        s.readChar()
-    }
+	s.readChar()
 
-    if s.eot() || s.ch == '\n' {
-        s.mark(startLine, startCol, "unterminated string")
-    } else {
-        buf.WriteByte('"')
+	for !s.eot() && s.ch != '"' && s.ch != '\n' {
+		buf.WriteByte(s.ch)
 
-        s.readChar()
-    }
+		s.readChar()
+	}
 
-    s.str = buf.String()
-    
-    return symString
+	if s.eot() || s.ch == '\n' {
+		s.mark(startLine, startCol, "unterminated string")
+	} else {
+		buf.WriteByte('"')
+
+		s.readChar()
+	}
+
+	s.str = buf.String()
+
+	return symString
 }
 
 func (s *Scanner) blockComment(startLine, startCol int) {
-    s.readChar()
-    
-    for !s.eot() && s.ch != '}' {
-        s.readChar()
-    }
+	s.readChar()
 
-    if s.eot() {
-        s.mark(startLine, startCol, "unterminated comment")
-    } else {
-        s.readChar()
-    }
+	for !s.eot() && s.ch != '}' {
+		s.readChar()
+	}
+
+	if s.eot() {
+		s.mark(startLine, startCol, "unterminated comment")
+	} else {
+		s.readChar()
+	}
 }
 
 func (s *Scanner) lineComment() {
-    for !s.eot() && s.ch != '\n' {
-        s.readChar()
-    }
+	for !s.eot() && s.ch != '\n' {
+		s.readChar()
+	}
 }
 
-func (s *Scanner) Get() Token {
-    var sym int
-    var lexeme string
-    var tokLine, tokCol int
+func (s *Scanner) get() Token {
+	var sym int
+	var lexeme string
+	var tokLine, tokCol int
 
-    for {
-        for !s.eot() && s.ch <= ' ' {
-            s.readChar()
-        }
+	for {
+		for !s.eot() && s.ch <= ' ' {
+			s.readChar()
+		}
 
-        tokLine = s.line
-        tokCol = s.col
-        lexeme = ""
+		tokLine = s.line
+		tokCol = s.col
+		lexeme = ""
 
-        if s.eot() {
-            return Token{symEOF, "", tokLine, tokCol}
-        }
+		if s.eot() {
+			return Token{symEOF, "", tokLine, tokCol}
+		}
 
-        ch := s.ch
+		ch := s.ch
 
-        switch {
+		switch {
             case isLetter(ch) || ch == '_':
                 sym = s.identifier()
 
                 lexeme = s.id
+
+            case ch >= '0' && ch <= '9':
+                sym = s.scanNumber()
+                lexeme = fmt.Sprintf("%d", s.ival)
 
             case ch == '"':
                 sym = s.scanString(tokLine, tokCol)
@@ -257,17 +291,17 @@ func (s *Scanner) Get() Token {
 
             case ch == '{':
                 s.blockComment(tokLine, tokCol)
-                
+
                 sym = symNull
-            
+
             default:
                 switch ch {
                     case ':':
                         s.readChar()
-                        
+
                         if s.ch == '=' {
                             s.readChar()
-                        
+
                             sym, lexeme = symAssign, ":="
                         } else {
                             sym, lexeme = symColon, ":"
@@ -288,6 +322,14 @@ func (s *Scanner) Get() Token {
                         s.readChar()
 
                         sym, lexeme = symSemicolon, ";"
+
+                    case ',':
+                        s.readChar()
+                        sym, lexeme = symComma, ","
+
+                    case '.':
+                        s.readChar()
+                        sym, lexeme = symPeriod, "."
 
                     case '(':
                         s.readChar()
@@ -324,53 +366,53 @@ func (s *Scanner) Get() Token {
                         }
 
                         sym = symNull
-                }
-        }
+                    }
+		}
 
-        if sym != symNull {
-            return Token{sym, lexeme, tokLine, tokCol}
-        }
-    }
+		if sym != symNull {
+			return Token{sym, lexeme, tokLine, tokCol}
+		}
+	}
 }
 
 func isLetter(ch byte) bool {
-    return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
 }
 
 func isAlphaNum(ch byte) bool {
-    return isLetter(ch) || (ch >= '0' && ch <= '9') || ch == '_'
+	return isLetter(ch) || (ch >= '0' && ch <= '9') || ch == '_'
 }
 
-func main() {
-    if len(os.Args) < 2 {
-        fmt.Fprintln(os.Stderr, "Usage: ./scanner <source_file.pas>")
+// func main() {
+//     if len(os.Args) < 2 {
+//         fmt.Fprintln(os.Stderr, "Usage: ./scanner <source_file.pas>")
 
-        os.Exit(1)
-    }
+//         os.Exit(1)
+//     }
 
-    data, err := os.ReadFile(os.Args[1])
+//     data, err := os.ReadFile(os.Args[1])
 
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Error: cannot open file '%s': %v\n", os.Args[1], err)
+//     if err != nil {
+//         fmt.Fprintf(os.Stderr, "Error: cannot open file '%s': %v\n", os.Args[1], err)
         
-        os.Exit(1)
-    }
+//         os.Exit(1)
+//     }
 
-    s := initScanner(data)
+//     s := initScanner(data)
 
-    for {
-        tok := s.Get()
+//     for {
+//         tok := s.get()
 
-        name := tokenNames[tok.Sym]
+//         name := tokenNames[tok.Sym]
 
-        if tok.Sym == symEOF {
-            fmt.Printf("%-14s (%d,%d)\n", name, tok.Line, tok.Col)
+//         if tok.Sym == symEOF {
+//             fmt.Printf("%-14s (%d,%d)\n", name, tok.Line, tok.Col)
 
-            break
-        }
+//             break
+//         }
 
-        fmt.Printf("%-14s %-20s (%d,%d)\n", name, tok.Lexeme, tok.Line, tok.Col)
-    }
-}
+//         fmt.Printf("%-14s %-20s (%d,%d)\n", name, tok.Lexeme, tok.Line, tok.Col)
+//     }
+// }
 
 // https://people.inf.ethz.ch/wirth/ProjectOberon/Sources/ORS.Mod.txt

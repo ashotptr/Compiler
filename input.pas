@@ -1,7 +1,16 @@
-program demo;
+program test;
+
+var a, b: integer;
+       c: integer;
+
 begin
-  x := 10 + 2;
-  // this is a comment
-  procedure test;
-  y := "hello";
-end
+
+a := 42;
+
+b := a + 16;
+
+c := a + b;
+
+c := c - 35;
+
+end.
