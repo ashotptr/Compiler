@@ -324,8 +324,9 @@ func checkArgTypes(subObj *ObjDesc, args []*Item, line, col int) {
         }
 
         if !typeMatch(param.Type, arg.Type) {
-            scn.mark(line, col, fmt.Sprintf("arg %d of %s: expected %s, got %s", +1, subObj.Name, typeName(param.Type), typeName(arg.Type)))
+			scn.mark(line, col, fmt.Sprintf("arg %d of %s: expected %s, got %s", i + 1, subObj.Name, typeName(param.Type), typeName(arg.Type)))
         }
+
         param = param.Next
     }
 }
@@ -453,7 +454,7 @@ func statSequence() {
 					emit("    call " + name)
 				} else if obj == nil {
 					if tok.Sym == symLParen {
-						actualParams()
+						evalArgsIntoRegs()
 					}
 				} else {
 					scn.mark(tok.Line, tok.Col, "':=' expected")
