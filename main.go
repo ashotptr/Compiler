@@ -24,7 +24,7 @@ func main() {
 	scn = initScanner(src)
 
 	next()
-	
+
 	initCodegen()
 
 	module()

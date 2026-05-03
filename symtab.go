@@ -1,9 +1,12 @@
 package main
 
 const (
-	Head  = 0
+	Head = 0
 	Const = 1
 	Var = 2
+	Proc = 3
+	Func = 4
+	Par = 5
 )
 
 const (
@@ -78,8 +81,8 @@ func openScope() {
 }
 
 func closeScope() {
-    progScope = topScope
-    topScope = topScope.Dsc
+	progScope = topScope
+	topScope = topScope.Dsc
 }
 
 func initScope() {

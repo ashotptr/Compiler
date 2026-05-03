@@ -9,6 +9,7 @@ import (
 )
 
 const Reg = 10
+const Local = 11
 
 type Item struct {
 	Mode int
@@ -21,18 +22,26 @@ var pc int
 var useWrite bool
 var lastAssigned string
 var codeLines []string
+var subCodeLines []string
+var inSubroutine bool
 
 func initCodegen() {
 	pc = 0
 	useWrite = false
 	lastAssigned = ""
 	codeLines = nil
+	subCodeLines = nil
+	inSubroutine = false
 }
 
 func header() {}
 
 func emit(s string) {
-	codeLines = append(codeLines, s)
+	if inSubroutine {
+		subCodeLines = append(subCodeLines, s)
+	} else {
+		codeLines = append(codeLines, s)
+	}
 
 	pc++
 }
@@ -47,6 +56,8 @@ func load(x *Item) {
 			emit("    movq $" + strconv.FormatInt(x.A, 10) + ", %rax")
 		case Var:
 			emit("    movq " + x.name + "(%rip), %rax")
+		case Local:
+			emit(fmt.Sprintf("    movq %d(%%rbp), %%rax", x.A))
 	}
 
 	x.Mode = Reg
@@ -59,10 +70,16 @@ func makeConstItem(x *Item, typ *TypeDesc, val int64) {
 }
 
 func makeItem(x *Item, obj *ObjDesc) {
-	x.Mode = obj.Class
-	x.Type = obj.Type
-	x.A = obj.Val
-	x.name = obj.Name
+	if obj.Class == Par || (obj.Class == Var && obj.Lev > 0) {
+		x.Mode = Local
+		x.Type = obj.Type
+		x.A = obj.Val
+	} else {
+		x.Mode = obj.Class
+		x.Type = obj.Type
+		x.A = obj.Val
+		x.name = obj.Name
+	}
 }
 
 func neg(x *Item) {
@@ -97,6 +114,8 @@ func addOp(op int, x, y *Item) {
 			rhs = "$" + strconv.FormatInt(y.A, 10)
 		case Var:
 			rhs = y.name + "(%rip)"
+		case Local:
+			rhs = fmt.Sprintf("%d(%%rbp)", y.A)
 		default:
 			return
 	}
@@ -113,19 +132,82 @@ func addOp(op int, x, y *Item) {
 func store(x, y *Item) {
 	load(y)
 
-	emit("    movq %rax, " + x.name + "(%rip)")
+	if x.Mode == Local {
+		emit(fmt.Sprintf("    movq %%rax, %d(%%rbp)", x.A))
+	} else {
+		emit("    movq %rax, " + x.name + "(%rip)")
 
-	lastAssigned = x.name
+		if !inSubroutine {
+			lastAssigned = x.name
+		}
+	}
 }
 
 func writeCall(x *Item) {
-	emit("    movq " + x.name + "(%rip), %rdi")
+	if x.Mode == Local {
+		emit(fmt.Sprintf("    movq %d(%%rbp), %%rdi", x.A))
+	} else {
+		emit("    movq " + x.name + "(%rip), %rdi")
+	}
+
 	emit("    call print_int")
 
 	useWrite = true
 }
 
 func checkRegs() {}
+
+var argRegs = []string{"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"}
+
+func emitCallArgs(args []*Item) {
+	for i, arg := range args {
+		if i >= len(argRegs) {
+			break
+		}
+
+		load(arg)
+		
+		emit("    movq %rax, " + argRegs[i])
+	}
+}
+
+func emitFuncCallInto(name string, args []*Item, x *Item) {
+	emitCallArgs(args)
+	
+	emit("    call " + name)
+	
+	x.Mode = Reg
+	x.Type = intType
+}
+
+func emitProcEntry(name string, frameSize int64, params []*ObjDesc) {
+	emit(name + ":")
+	emit("    pushq %rbp")
+	emit("    movq %rsp, %rbp")
+	
+	if frameSize > 0 {
+		emit(fmt.Sprintf("    subq $%d, %%rsp", frameSize))
+	}
+
+	for i, param := range params {
+		if i >= len(argRegs) {
+			break
+		}
+		
+		emit(fmt.Sprintf("    movq %s, %d(%%rbp)", argRegs[i], param.Val))
+	}
+}
+
+func emitProcExit() {
+	emit("    leave")
+	emit("    ret")
+}
+
+func emitFuncExit(retOffset int64) {
+	emit(fmt.Sprintf("    movq %d(%%rbp), %%rax", retOffset))
+	emit("    leave")
+	emit("    ret")
+}
 
 func close(base string) {
 	asm := buildAssembly()
@@ -154,15 +236,11 @@ func close(base string) {
 func buildAssembly() string {
 	var sb strings.Builder
 
-	obj := progScope.Next
-
-	for obj != nil {
+	for obj := progScope.Next; obj != nil; obj = obj.Next {
 		if obj.Class == Var {
 			sb.WriteString("    .section .bss\n")
 			break
 		}
-
-		obj = obj.Next
 	}
 
 	for obj := progScope.Next; obj != nil; obj = obj.Next {
@@ -176,6 +254,14 @@ func buildAssembly() string {
 
 	if useWrite {
 		sb.WriteString(printIntASM + "\n\n")
+	}
+
+	for _, l := range subCodeLines {
+		sb.WriteString(l + "\n")
+	}
+
+	if len(subCodeLines) > 0 {
+		sb.WriteString("\n")
 	}
 
 	sb.WriteString("_start:\n")
