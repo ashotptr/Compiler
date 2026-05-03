@@ -10,6 +10,7 @@ import (
 
 const Reg = 10
 const Local = 11
+const SavedRBX = 12
 
 type Item struct {
 	Mode int
@@ -47,20 +48,22 @@ func emit(s string) {
 }
 
 func load(x *Item) {
-	if x.Mode == Reg {
-		return
-	}
+    if x.Mode == Reg {
+        return
+    }
 
-	switch x.Mode {
+    switch x.Mode {
 		case Const:
 			emit("    movq $" + strconv.FormatInt(x.A, 10) + ", %rax")
 		case Var:
 			emit("    movq " + x.name + "(%rip), %rax")
 		case Local:
 			emit(fmt.Sprintf("    movq %d(%%rbp), %%rax", x.A))
-	}
+		case SavedRBX:
+			emit("    movq %rbx, %rax")
+    }
 
-	x.Mode = Reg
+    x.Mode = Reg
 }
 
 func makeConstItem(x *Item, typ *TypeDesc, val int64) {
@@ -95,21 +98,33 @@ func neg(x *Item) {
 }
 
 func addOp(op int, x, y *Item) {
-	if x.Mode == Const && y.Mode == Const {
-		if op == symPlus {
-			x.A += y.A
-		} else {
-			x.A -= y.A
-		}
+    if x.Mode == Const && y.Mode == Const {
+        if op == symPlus {
+            x.A += y.A
+        } else {
+            x.A -= y.A
+        }
+        return
+    }
+	
+	if y.Mode == Reg {
+        emit("    movq %rax, %rcx")
+        load(x)
+        if op == symPlus {
+            emit("    addq %rcx, %rax")
+        } else {
+            emit("    subq %rcx, %rax")
+        }
+        x.Mode = Reg
 
-		return
-	}
+        return
+    }
 
-	load(x)
+    load(x)
 
-	var rhs string
+    var rhs string
 
-	switch y.Mode {
+    switch y.Mode {
 		case Const:
 			rhs = "$" + strconv.FormatInt(y.A, 10)
 		case Var:
@@ -118,15 +133,15 @@ func addOp(op int, x, y *Item) {
 			rhs = fmt.Sprintf("%d(%%rbp)", y.A)
 		default:
 			return
-	}
+    }
 
-	if op == symPlus {
-		emit("    addq " + rhs + ", %rax")
-	} else {
-		emit("    subq " + rhs + ", %rax")
-	}
+    if op == symPlus {
+        emit("    addq " + rhs + ", %rax")
+    } else {
+        emit("    subq " + rhs + ", %rax")
+    }
 
-	x.Mode = Reg
+    x.Mode = Reg
 }
 
 func store(x, y *Item) {
@@ -144,15 +159,12 @@ func store(x, y *Item) {
 }
 
 func writeCall(x *Item) {
-	if x.Mode == Local {
-		emit(fmt.Sprintf("    movq %d(%%rbp), %%rdi", x.A))
-	} else {
-		emit("    movq " + x.name + "(%rip), %rdi")
-	}
+    load(x)
 
-	emit("    call print_int")
+    emit("    movq %rax, %rdi")
+    emit("    call print_int")
 
-	useWrite = true
+    useWrite = true
 }
 
 func checkRegs() {}

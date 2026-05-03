@@ -81,8 +81,7 @@ func openScope() {
 }
 
 func closeScope() {
-	progScope = topScope
-	topScope = topScope.Dsc
+    topScope = topScope.Dsc
 }
 
 func initScope() {

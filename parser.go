@@ -22,6 +22,18 @@ func check(s int, msg string) {
 	}
 }
 
+func typeMatch(a, b *TypeDesc) bool {
+    if a == nil || b == nil {
+        return true
+    }
+
+    if a.Form == NoTyp || b.Form == NoTyp {
+        return true
+    }
+    
+	return a.Form == b.Form
+}
+
 func identList(class int) *ObjDesc {
 	if tok.Sym != symIdent {
 		scn.mark(tok.Line, tok.Col, "identifier expected")
@@ -229,32 +241,44 @@ func parseLocalVarDefs(startOffset int64) int64 {
 	return offset
 }
 
-func actualParams() []*Item {
-	var args []*Item
+func evalArgsIntoRegs() []*Item {
+    var args []*Item
 
-	check(symLParen, "'(' expected")
+    check(symLParen, "'(' expected")
 
-	if tok.Sym != symRParen {
-		var x Item
+    if tok.Sym != symRParen {
+        var x Item
 
-		factor(&x)
+        factor(&x)
 
-		args = append(args, &x)
+        load(&x)
 
-		for tok.Sym == symComma {
-			next()
+        if len(args) < len(argRegs) {
+            emit("    movq %rax, " + argRegs[len(args)])
+        }
 
-			var y Item
+        args = append(args, &x)
 
-			factor(&y)
+        for tok.Sym == symComma {
+            next()
 
-			args = append(args, &y)
-		}
-	}
+            var y Item
 
-	check(symRParen, "')' expected")
+            factor(&y)
 
-	return args
+            load(&y)
+
+            if len(args) < len(argRegs) {
+                emit("    movq %rax, " + argRegs[len(args)])
+            }
+
+            args = append(args, &y)
+        }
+    }
+
+    check(symRParen, "')' expected")
+
+    return args
 }
 
 func countParams(subObj *ObjDesc) int {
@@ -271,6 +295,39 @@ func countParams(subObj *ObjDesc) int {
 	}
 
 	return n
+}
+func typeName(t *TypeDesc) string {
+    if t == nil {
+        return "unknown"
+    }
+
+	switch t.Form {
+		case Int:
+			return "integer"
+		case Str:
+			return "string"
+		default:
+			return "unknown"
+    }
+}
+
+func checkArgTypes(subObj *ObjDesc, args []*Item, line, col int) {
+    if subObj.Dsc == nil {
+        return
+    }
+
+    param := subObj.Dsc.Next
+    
+	for i, arg := range args {
+        if param == nil || param.Class != Par {
+            break
+        }
+
+        if !typeMatch(param.Type, arg.Type) {
+            scn.mark(line, col, fmt.Sprintf("arg %d of %s: expected %s, got %s", +1, subObj.Name, typeName(param.Type), typeName(arg.Type)))
+        }
+        param = param.Next
+    }
 }
 
 func factor(x *Item) {
@@ -289,16 +346,19 @@ func factor(x *Item) {
 			var args []*Item
 
 			if tok.Sym == symLParen {
-				args = actualParams()
+				args = evalArgsIntoRegs()
 			}
 
 			expected := countParams(obj)
 
 			if len(args) != expected {
-				scn.mark(tok.Line, tok.Col,	fmt.Sprintf("wrong arg count for %s: want %d, got %d", name, expected, len(args)))
+				scn.mark(tok.Line, tok.Col, fmt.Sprintf("wrong arg count for %s: want %d, got %d", name, expected, len(args)))
 			}
 
-			emitFuncCallInto(name, args, x)
+			emit("    call " + name)
+
+			x.Mode = Reg
+			x.Type = obj.Type
 		} else if obj.Class == Proc {
 			scn.mark(tok.Line, tok.Col, name+" is a procedure, not a value")
 
@@ -352,6 +412,12 @@ func statSequence() {
 
 					next()
 
+					if y.Mode == Reg {
+						emit("    movq %rax, %rbx")
+
+						y.Mode = SavedRBX
+					}
+
 					var z Item
 
 					factor(&z)
@@ -360,6 +426,10 @@ func statSequence() {
 				}
 
 				if obj != nil {
+					if !typeMatch(obj.Type, y.Type) {
+						scn.mark(tok.Line, tok.Col,	fmt.Sprintf("type mismatch: cannot assign %s to %s", typeName(y.Type), typeName(obj.Type)))
+					}
+
 					store(&x, &y)
 
 					if currentFuncRetName != "" && name == currentFuncRetName {
@@ -371,7 +441,7 @@ func statSequence() {
 					var args []*Item
 
 					if tok.Sym == symLParen {
-						args = actualParams()
+						args = evalArgsIntoRegs()
 					}
 
 					expected := countParams(obj)
@@ -379,8 +449,6 @@ func statSequence() {
 					if len(args) != expected {
 						scn.mark(tok.Line, tok.Col,	fmt.Sprintf("wrong arg count for %s: want %d, got %d", name, expected, len(args)))
 					}
-
-					emitCallArgs(args)
 
 					emit("    call " + name)
 				} else if obj == nil {
@@ -397,25 +465,29 @@ func statSequence() {
 
 			check(symLParen, "'(' expected")
 
-			if tok.Sym == symIdent {
-				name := tok.Lexeme
+			var wx Item
+
+			factor(&wx)
+
+			if tok.Sym == symPlus || tok.Sym == symMinus {
+				op := tok.Sym
 
 				next()
 
-				obj := thisObj(name)
+				if wx.Mode == Reg {
+					emit("    movq %rax, %rbx")
 
-				if obj == nil {
-					scn.mark(tok.Line, tok.Col, "undef: "+name)
-				} else {
-					var x Item
-
-					makeItem(&x, obj)
-
-					writeCall(&x)
+					wx.Mode = SavedRBX
 				}
-			} else {
-				scn.mark(tok.Line, tok.Col, "identifier expected")
+
+				var wz Item
+
+				factor(&wz)
+
+				addOp(op, &wx, &wz)
 			}
+
+			writeCall(&wx)
 
 			check(symRParen, "')' expected")
 		} else {
@@ -599,10 +671,10 @@ func subroutineDecl() {
 }
 
 func module() {
-	check(symKwProgram, "'program' expected")
+    check(symKwProgram, "'program' expected")
 
-	initScope()
-	openScope()
+    initScope()
+    openScope()
 
 	if tok.Sym == symIdent {
 		modid = tok.Lexeme
@@ -627,13 +699,15 @@ func module() {
 
 	statSequence()
 
-	check(symKwEnd, "'end' expected")
+    check(symKwEnd, "'end' expected")
 
-	if tok.Sym != symPeriod {
-		scn.mark(tok.Line, tok.Col, "'.' expected")
-	}
+    if tok.Sym != symPeriod {
+        scn.mark(tok.Line, tok.Col, "'.' expected")
+    }
 
-	closeScope()
+    progScope = topScope
+
+    closeScope()
 }
 
 // https://people.inf.ethz.ch/wirth/ProjectOberon/Sources/ORP.Mod.txt
